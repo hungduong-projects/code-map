@@ -1,0 +1,14 @@
+{
+  "name": "code-map",
+  "displayName": "Code Map",
+  "description": "A checked-in zone map agents read before they touch a repo: /code-map:init drafts it, hooks inject it, zones-check keeps it honest.",
+  "version": "1.0.1",
+  "author": {
+    "name": "Harry Duong",
+    "url": "https://github.com/hungduong-projects"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/hungduong-projects/code-map",
+  "repository": "https://github.com/hungduong-projects/code-map",
+  "keywords": ["codebase-map", "zones", "context", "routing", "token-efficiency", "agent-navigation"]
+}
