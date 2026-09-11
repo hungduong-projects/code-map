@@ -145,7 +145,7 @@ test("route reads a 1.1.0 seen file as empty", () => {
   assert.ok(run("route.mjs", { session_id, prompt: BILLING }, { cwd }));
 });
 
-const HOOKS = ["route.mjs", "spawn.mjs"];
+const HOOKS = ["route.mjs", "spawn.mjs", "touch.mjs"];
 
 test("hooks exit 0 and print nothing on invalid JSON", () => {
   const cwd = fixture();
@@ -184,4 +184,55 @@ const hookScripts = (event) => JSON.parse(readFileSync(join(REPO, "hooks", "hook
 
 test("hooks.json wires each script to its event and matcher", () => {
   assert.deepEqual(hookScripts("PreToolUse"), [["Agent", ["spawn.mjs"]]]);
+  assert.deepEqual(hookScripts("PostToolUse"), [["Write|Edit", ["orphan-check.mjs"]], ["Read|Edit|Write", ["touch.mjs"]]]);
+});
+
+const touch = (cwd, session_id, tool_name, file, extra = {}) =>
+  run("touch.mjs", { session_id, tool_name, tool_input: { file_path: join(cwd, file) }, ...extra }, { cwd });
+
+test("touch gives a high-risk zone its full entry once per thread", () => {
+  const cwd = fixture();
+  const session_id = session();
+  const out = touch(cwd, session_id, "Read", "a/x.ts");
+  assert.equal(out.hookSpecificOutput.hookEventName, "PostToolUse");
+  assert.ok(out.hookSpecificOutput.additionalContext.startsWith("code-map: a/x.ts is in ZA (high). Its entry:\nZA (high): "));
+  assert.equal(out.systemMessage, "code-map → ZA (high) via a/x.ts");
+  assert.equal(touch(cwd, session_id, "Read", "a/x.ts"), null);
+  assert.ok(touch(cwd, session_id, "Read", "a/x.ts", { agent_id: "s1" }), "a subagent keeps its own seen set");
+});
+
+test("touch gives a low-risk zone one line and no notice", () => {
+  const out = touch(fixture(), session(), "Read", "b/chart.ts");
+  assert.equal(out.hookSpecificOutput.additionalContext,
+    "code-map: b/chart.ts is in ZB (low), Dashboard widgets and charts. verify: npm test b; 2 invariants in CODEMAP.md.");
+  assert.equal(out.systemMessage, undefined);
+});
+
+test("touch reports blast radius on the first entrypoint edit", () => {
+  const cwd = fixture();
+  const session_id = session();
+  const out = touch(cwd, session_id, "Edit", "a/index.ts");
+  assert.match(out.hookSpecificOutput.additionalContext, /Its entry:\nZA \(high\): /);
+  assert.match(out.hookSpecificOutput.additionalContext, /\ncode-map: a\/index\.ts is a ZA entrypoint used by ZB\. verify: npm test b$/);
+  assert.equal(out.systemMessage, "code-map → ZA (high) via a/index.ts · code-map → a/index.ts is a ZA entrypoint used by 1 zone");
+  assert.equal(touch(cwd, session_id, "Edit", "a/index.ts"), null);
+});
+
+test("touch reports blast radius for a zone the thread already holds", () => {
+  const cwd = fixture();
+  const session_id = session();
+  touch(cwd, session_id, "Read", "a/index.ts");
+  const out = touch(cwd, session_id, "Write", "a/index.ts");
+  assert.equal(out.hookSpecificOutput.additionalContext, "code-map: a/index.ts is a ZA entrypoint used by ZB. verify: npm test b");
+  assert.equal(out.systemMessage, "code-map → a/index.ts is a ZA entrypoint used by 1 zone");
+});
+
+test("touch ignores unowned files, the map, outside paths, missing paths, and unmapped repos", () => {
+  const cwd = fixture();
+  const session_id = session();
+  assert.equal(touch(cwd, session_id, "Read", "notes/todo.md"), null);
+  assert.equal(touch(cwd, session_id, "Read", "CODEMAP.md"), null);
+  assert.equal(run("touch.mjs", { session_id, tool_name: "Read", tool_input: { file_path: "/elsewhere/a/x.ts" } }, { cwd }), null);
+  assert.equal(run("touch.mjs", { session_id, tool_name: "Read", tool_input: {} }, { cwd }), null);
+  assert.equal(touch(fixture({ map: null }), session(), "Read", "a/x.ts"), null);
 });
