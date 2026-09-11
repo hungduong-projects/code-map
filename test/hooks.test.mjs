@@ -281,6 +281,26 @@ test("touch reports blast radius for a zone the thread already holds", () => {
   assert.equal(out.systemMessage, "code-map → a/index.ts is a ZA entrypoint used by 1 zone");
 });
 
+test("touch routes every file in a Codex patch in one output, with blast for an entrypoint", () => {
+  const cwd = fixture();
+  const session_id = session();
+  const command = ["*** Begin Patch", `*** Update File: ${join(cwd, "a/index.ts")}`, "@@", "+// rounding",
+    `*** Update File: ${join(cwd, "a/x.ts")}`, "@@", "+// rounding", "*** Update File: b/chart.ts", "@@", "+// scale", "*** End Patch"].join("\n");
+  const out = run("touch.mjs", { session_id, tool_name: "apply_patch", tool_input: { command } }, { cwd });
+  const context = out.hookSpecificOutput.additionalContext;
+  assert.ok(context.startsWith("code-map: a/index.ts is in ZA (high). Its entry:\nZA (high): "));
+  assert.match(context, /\ncode-map: a\/index\.ts is a ZA entrypoint used by ZB\. verify: npm test b\ncode-map: b\/chart\.ts is in ZB \(low\), [^\n]+$/);
+  assert.equal(context.match(/ZA \(high\): /g).length, 1);
+  assert.equal(out.systemMessage, "code-map → ZA (high) via a/index.ts · code-map → a/index.ts is a ZA entrypoint used by 1 zone");
+  assert.deepEqual(JSON.parse(readFileSync(seenFile(session_id), "utf-8")), { zones: { ZA: "full", ZB: "line" }, blast: ["ZA"] });
+});
+
+test("touch routes a plain shell read like a Read", () => {
+  const out = run("touch.mjs", { session_id: session(), tool_name: "Bash", tool_input: { command: "sed -n '1,40p' b/chart.ts" } }, { cwd: fixture() });
+  assert.equal(out.hookSpecificOutput.additionalContext,
+    "code-map: b/chart.ts is in ZB (low), Dashboard widgets and charts. verify: npm test b; 2 invariants in CODEMAP.md.");
+});
+
 test("touch ignores unowned files, the map, outside paths, missing paths, and unmapped repos", () => {
   const cwd = fixture();
   const session_id = session();
