@@ -291,10 +291,14 @@ const hookScripts = (event) => JSON.parse(readFileSync(join(REPO, "hooks", "hook
   .map((group) => [group.matcher, group.hooks.map((hook) => hook.command.match(/scripts\/([\w-]+\.mjs)/)[1])]);
 
 test("hooks.json wires each script to its event and matcher", () => {
-  assert.deepEqual(hookScripts("PreToolUse"), [["Agent", ["spawn.mjs"]]]);
-  assert.deepEqual(hookScripts("PostToolUse"), [["Write|Edit", ["orphan-check.mjs"]], ["Read|Edit|Write", ["touch.mjs"]]]);
+  assert.deepEqual(hookScripts("PreToolUse"), [["Agent|.*spawn_agent", ["spawn.mjs"]]]);
+  assert.deepEqual(hookScripts("PostToolUse"), [["Write|Edit", ["orphan-check.mjs"]], ["Read|Edit|Write|Bash", ["touch.mjs"]]]);
   assert.deepEqual(hookScripts("SessionStart"), [["startup|clear|compact", ["session-start.mjs"]]]);
   assert.deepEqual(hookScripts("UserPromptSubmit"), [[undefined, ["route.mjs"]]]);
+  assert.deepEqual(hookScripts("SubagentStart"), [[undefined, ["subagent-start.mjs"]]]);
+  /* Codex matches the whole tool name, and names its spawn tool with a namespace. */
+  const spawnMatcher = new RegExp(`^(?:${hookScripts("PreToolUse")[0][0]})$`);
+  for (const name of ["Agent", "spawn_agent", "collaborationspawn_agent"]) assert.match(name, spawnMatcher);
 });
 
 const touch = (cwd, session_id, tool_name, file, extra = {}) =>
