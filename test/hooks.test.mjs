@@ -361,6 +361,19 @@ test("orphan-check still flags an edit to a file no zone owns", () => {
   assert.match(out.hookSpecificOutput.additionalContext, /^`notes\/todo\.md` belongs to no zone in CODEMAP\.md\./);
 });
 
+test("orphan-check flags each unowned file a Codex patch edits, one line each, and ignores reads", () => {
+  const cwd = fixture();
+  const patch = (...lines) => ({ tool_name: "apply_patch", tool_input: { command: ["*** Begin Patch", ...lines, "*** End Patch"].join("\n") } });
+  const out = run("orphan-check.mjs", patch("*** Add File: notes/new.md", "+hi", `*** Update File: ${join(cwd, "a/x.ts")}`, "@@", "+//",
+    "*** Update File: notes/todo.md", "@@", "+more"), { cwd });
+  const lines = out.hookSpecificOutput.additionalContext.split("\n");
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /^`notes\/new\.md` belongs to no zone in CODEMAP\.md\./);
+  assert.match(lines[1], /^`notes\/todo\.md` belongs to no zone in CODEMAP\.md\./);
+  assert.equal(run("orphan-check.mjs", patch("*** Update File: a/x.ts", "@@", "+//"), { cwd }), null);
+  assert.equal(run("orphan-check.mjs", { tool_name: "Bash", tool_input: { command: "cat notes/todo.md" } }, { cwd }), null);
+});
+
 test("zones-check reports the token budget and warns past it without failing", () => {
   const check = (map) => {
     const cwd = fixture({ map });
