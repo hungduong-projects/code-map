@@ -288,3 +288,20 @@ test("orphan-check still flags an edit to a file no zone owns", () => {
   const out = run("orphan-check.mjs", { tool_name: "Edit", tool_input: { file_path: join(cwd, "notes/todo.md") } }, { cwd });
   assert.match(out.hookSpecificOutput.additionalContext, /^`notes\/todo\.md` belongs to no zone in CODEMAP\.md\./);
 });
+
+test("zones-check reports the token budget and warns past it without failing", () => {
+  const check = (map) => {
+    const cwd = fixture({ map });
+    for (const args of [["init", "-q"], ["add", "."]]) assert.equal(spawnSync("git", args, { cwd }).status, 0);
+    return spawnSync(process.execPath, [script("zones-check.mjs")], { cwd, encoding: "utf-8" });
+  };
+
+  const small = check(mapText());
+  assert.equal(small.status, 0, small.stderr);
+  assert.match(small.stdout, /^code zones: 3 zones, no problems\ncode zones: session-start index ≈ \d+ tokens, map ≈ \d+ tokens\n/);
+  assert.doesNotMatch(small.stderr, /budget/);
+
+  const big = check(`${mapText()}\n${"Notes on the billing flow. ".repeat(400)}\n`);
+  assert.equal(big.status, 0, big.stderr);
+  assert.match(big.stderr, /code zones: warning, map ≈ \d+ tokens is over the 2,500-token budget/);
+});

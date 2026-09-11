@@ -5,10 +5,10 @@
 
 import { access, readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { promisify } from "node:util";
 
-import { findMap, globRegex, parseMap } from "./zones-core.mjs";
+import { findMap, formatIndex, globRegex, parseMap } from "./zones-core.mjs";
 
 const ROOT = process.cwd();
 const problems = [];
@@ -78,6 +78,12 @@ if (problems.length) {
 }
 
 console.log(`code zones: ${zones.length} zones, no problems`);
+/* chars / 4 is a rough token count, close enough to catch a map that has
+ * outgrown what every session pays for it. */
+const indexTokens = Math.ceil(formatIndex({ relative: relative(ROOT, mapPath), zones }).length / 4);
+const mapTokens = Math.ceil(text.length / 4);
+console.log(`code zones: session-start index ≈ ${indexTokens} tokens, map ≈ ${mapTokens} tokens`);
+if (mapTokens > 2500) console.warn(`code zones: warning, map ≈ ${mapTokens} tokens is over the 2,500-token budget`);
 if (orphans.length) {
   console.warn(`code zones: warning — ${orphans.length} tracked file${orphans.length === 1 ? "" : "s"} have no zone`);
   for (const path of orphans.slice(0, 20)) console.warn(`  ${path}`);
