@@ -1,7 +1,8 @@
 /* Shared parsing for the code-zones map. Dependency-free so hooks and CI can
  * run it before any install step. */
 
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /* Where a repo may keep its map, first hit wins. */
@@ -175,4 +176,103 @@ export async function loadZones(root) {
   const fail = (kind, message) => problems.push(`[${kind}] ${message}`);
   const zones = parseMap(await readFile(map.path, "utf-8"), fail);
   return { ...map, zones, problems };
+}
+
+export const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+const list = (values) => (values.length ? values.join(", ") : "none");
+
+/* Zones that list `id` in their deps, in map order: the ones an edit to its
+ * public surface can break. */
+export function dependents(zones, id) {
+  return zones.filter((zone) => Array.isArray(zone.deps) && zone.deps.includes(id));
+}
+
+/* A zone's full record as hooks inject it. `used by` comes from the other
+ * zones' deps, so the map schema stays the same. */
+export function formatEntry(zone, zones) {
+  const users = dependents(zones, zone.id).map((user) => user.id);
+  return [
+    `${zone.id} (${zone.risk}): ${zone.purpose}`,
+    `  read_first: ${list(zone.read_first)}`,
+    `  entrypoints: ${list(zone.entrypoints)}`,
+    `  paths: ${list(zone.paths)}`,
+    ...zone.invariants.map((invariant) => `  invariant: ${invariant}`),
+    `  deps: ${list(zone.deps)}`,
+    ...(users.length ? [`  used by: ${users.join(", ")}`] : []),
+    `  verify: ${zone.verify}`,
+  ].join("\n");
+}
+
+/* One line for a touch in a low-risk zone: enough to place the file and find
+ * the rest in the map. */
+export function formatLine(path, zone, relative) {
+  const invariants = zone.invariants.length ? plural(zone.invariants.length, "invariant") : "no invariants";
+  return `code-map: ${path} is in ${zone.id} (${zone.risk}), ${zone.purpose.replace(/\.$/, "")}. ` +
+    `verify: ${zone.verify}; ${invariants} in ${relative}.`;
+}
+
+/* Who depends on an edited entrypoint and how to check them, or null when no
+ * zone does. */
+export function formatBlast(path, zone, zones) {
+  const users = dependents(zones, zone.id);
+  if (!users.length) return null;
+  const verify = [...new Set(users.map((user) => user.verify))].join("; ");
+  return `code-map: ${path} is a ${zone.id} entrypoint used by ${users.map((user) => user.id).join(", ")}. verify: ${verify}`;
+}
+
+/* The session-start index. zones-check measures this same text for its
+ * budget line. */
+export function formatIndex({ relative, zones }) {
+  return [
+    `This repo has a code-zones map at ${relative}. A prompt that moves into a`,
+    `high-risk zone or spans zones arrives with those zones' entries attached — start`,
+    `from their read_first files, entrypoints, and verify command. When no entry`,
+    `arrives, match the edit to a zone below and read only that zone's section if`,
+    `you need it. The map is a routing hint; source wins. Zones:`,
+    ...zones
+      .filter((zone) => zone.id && zone.purpose)
+      .map((zone) => `- ${zone.id} (${zone.risk ?? "low"}): ${zone.purpose}`),
+  ].join("\n");
+}
+
+/* Hook input arrives as one JSON object on stdin. Anything else is no event
+ * to act on, so the hook ends quietly. */
+export async function readInput() {
+  let data = "";
+  for await (const chunk of process.stdin) data += chunk;
+  try {
+    const input = JSON.parse(data);
+    if (input && typeof input === "object") return input;
+  } catch {}
+  process.exit(0);
+}
+
+/* One JSON line for Claude Code: context for the model, a notice the user
+ * sees at no token cost, and event fields such as updatedInput. Callers emit
+ * last and let the process end, so piped stdout flushes. */
+export function emit(event, { context = "", notice = "", extra = {} } = {}) {
+  const specific = { ...(context ? { additionalContext: context } : {}), ...extra };
+  console.log(JSON.stringify({
+    ...(Object.keys(specific).length ? { hookSpecificOutput: { hookEventName: event, ...specific } } : {}),
+    ...(notice ? { systemMessage: notice } : {}),
+  }));
+}
+
+/* What a thread already holds: zones map to "full" once their entry went in
+ * and "line" after a one-line touch; blast lists zones whose entrypoint edit
+ * was already reported. A subagent keeps its own file, since it starts
+ * without the main thread's context. Any other shape, including the 1.1.0
+ * array, reads as empty. */
+const safe = (value) => String(value ?? "").replace(/[^\w-]/g, "");
+export const seenPath = (session, agent) =>
+  join(tmpdir(), `code-map-${safe(session)}${agent ? `-${safe(agent)}` : ""}.json`);
+
+export async function loadSeen(session, agent) {
+  const seen = await readFile(seenPath(session, agent), "utf-8").then(JSON.parse).catch(() => null);
+  const valid = seen?.zones && typeof seen.zones === "object" && !Array.isArray(seen.zones) && Array.isArray(seen.blast);
+  return valid ? seen : { zones: {}, blast: [] };
+}
+
+export async function saveSeen(session, agent, seen) {
+  await writeFile(seenPath(session, agent), JSON.stringify(seen)).catch(() => {});
 }
