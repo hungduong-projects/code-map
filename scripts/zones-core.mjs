@@ -176,3 +176,60 @@ export async function loadZones(root) {
   const zones = parseMap(await readFile(map.path, "utf-8"), fail);
   return { ...map, zones, problems };
 }
+
+export const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+const list = (values) => (values.length ? values.join(", ") : "none");
+
+/* Zones that list `id` in their deps, in map order: the ones an edit to its
+ * public surface can break. */
+export function dependents(zones, id) {
+  return zones.filter((zone) => Array.isArray(zone.deps) && zone.deps.includes(id));
+}
+
+/* A zone's full record as hooks inject it. `used by` comes from the other
+ * zones' deps, so the map schema stays the same. */
+export function formatEntry(zone, zones) {
+  const users = dependents(zones, zone.id).map((user) => user.id);
+  return [
+    `${zone.id} (${zone.risk}): ${zone.purpose}`,
+    `  read_first: ${list(zone.read_first)}`,
+    `  entrypoints: ${list(zone.entrypoints)}`,
+    `  paths: ${list(zone.paths)}`,
+    ...zone.invariants.map((invariant) => `  invariant: ${invariant}`),
+    `  deps: ${list(zone.deps)}`,
+    ...(users.length ? [`  used by: ${users.join(", ")}`] : []),
+    `  verify: ${zone.verify}`,
+  ].join("\n");
+}
+
+/* One line for a touch in a low-risk zone: enough to place the file and find
+ * the rest in the map. */
+export function formatLine(path, zone, relative) {
+  const invariants = zone.invariants.length ? plural(zone.invariants.length, "invariant") : "no invariants";
+  return `code-map: ${path} is in ${zone.id} (${zone.risk}), ${zone.purpose.replace(/\.$/, "")}. ` +
+    `verify: ${zone.verify}; ${invariants} in ${relative}.`;
+}
+
+/* Who depends on an edited entrypoint and how to check them, or null when no
+ * zone does. */
+export function formatBlast(path, zone, zones) {
+  const users = dependents(zones, zone.id);
+  if (!users.length) return null;
+  const verify = [...new Set(users.map((user) => user.verify))].join("; ");
+  return `code-map: ${path} is a ${zone.id} entrypoint used by ${users.map((user) => user.id).join(", ")}. verify: ${verify}`;
+}
+
+/* The session-start index. zones-check measures this same text for its
+ * budget line. */
+export function formatIndex({ relative, zones }) {
+  return [
+    `This repo has a code-zones map at ${relative}. A prompt that moves into a`,
+    `high-risk zone or spans zones arrives with those zones' entries attached — start`,
+    `from their read_first files, entrypoints, and verify command. When no entry`,
+    `arrives, match the edit to a zone below and read only that zone's section if`,
+    `you need it. The map is a routing hint; source wins. Zones:`,
+    ...zones
+      .filter((zone) => zone.id && zone.purpose)
+      .map((zone) => `- ${zone.id} (${zone.risk ?? "low"}): ${zone.purpose}`),
+  ].join("\n");
+}
