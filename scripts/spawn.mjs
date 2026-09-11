@@ -5,12 +5,19 @@
  * because subagents treat a detached "fact" as outside their brief. Adds to
  * the input only: never approves or blocks the call. */
 
-import { emit, formatEntry, loadZones, readInput, routeZones } from "./zones-core.mjs";
+import { emit, formatEntry, loadZones, readInput, routeZones, saveFork } from "./zones-core.mjs";
 
 const MARKER = "Zone context for this task (code-map";
 
 const input = await readInput();
 const task = input.tool_input;
+/* A Codex spawn_agent message arrives encrypted, so there is no task to
+ * route. Record how much of this thread the child inherits instead;
+ * subagent-start hands it zones when it inherits none. */
+if (typeof task?.prompt !== "string" && String(input.tool_name).endsWith("spawn_agent")) {
+  await saveFork(input.session_id, task?.fork_turns);
+  process.exit(0);
+}
 if (typeof task?.prompt !== "string" || task.prompt.includes(MARKER)) process.exit(0);
 
 const loaded = await loadZones(input.cwd ?? process.cwd()).catch(() => null);

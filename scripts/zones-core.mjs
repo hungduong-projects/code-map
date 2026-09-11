@@ -321,3 +321,16 @@ export async function loadSeen(session, agent) {
 export async function saveSeen(session, agent, seen) {
   await writeFile(seenPath(session, agent), JSON.stringify(seen)).catch(() => {});
 }
+
+/* How much of the parent thread the next Codex subagent inherits: its spawn
+ * call's fork_turns, "all" when unset. Only a Codex spawn writes this, so a
+ * Claude session never has one. */
+const forkPath = (session) => seenPath(session, "fork");
+
+export async function saveFork(session, fork) {
+  await writeFile(forkPath(session), JSON.stringify(String(fork ?? "all"))).catch(() => {});
+}
+
+export async function loadFork(session) {
+  return readFile(forkPath(session), "utf-8").then(JSON.parse).catch(() => null);
+}

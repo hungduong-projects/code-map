@@ -226,6 +226,18 @@ test("spawn points unrouted prompts at the map without a notice, then skips mark
   assert.equal(run("spawn.mjs", { session_id: session(), tool_name: "Agent", tool_input: { prompt } }, { cwd }), null);
 });
 
+const forkFile = (session_id) => join(TMP, `code-map-${session_id}-fork.json`);
+
+test("spawn records a Codex spawn's fork mode, all when unset, and prints nothing", () => {
+  const cwd = fixture({ map: null });
+  const session_id = session();
+  const spawn = (tool_input) => run("spawn.mjs", { session_id, tool_name: "collaborationspawn_agent", tool_input }, { cwd });
+  assert.equal(spawn({ task_name: "scope", fork_turns: "none", message: "gAAAAABencrypted" }), null);
+  assert.equal(JSON.parse(readFileSync(forkFile(session_id), "utf-8")), "none");
+  assert.equal(spawn({ task_name: "scope", message: "gAAAAABencrypted" }), null);
+  assert.equal(JSON.parse(readFileSync(forkFile(session_id), "utf-8")), "all");
+});
+
 test("spawn is silent without a map or a prompt", () => {
   assert.equal(run("spawn.mjs", { tool_name: "Agent", tool_input: { prompt: BILLING } }, { cwd: fixture({ map: null }) }), null);
   assert.equal(run("spawn.mjs", { tool_name: "Agent", tool_input: {} }, { cwd: fixture() }), null);
