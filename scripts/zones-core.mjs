@@ -245,6 +245,17 @@ export function formatIndex({ relative, zones }) {
   ].join("\n");
 }
 
+/* The zone block a subagent starts with: the given zones' entries, or a
+ * pointer to the map when there are none. It reads as part of the task,
+ * because subagents treat a detached "fact" as outside their brief. */
+export const TASK_MARKER = "Zone context for this task (code-map";
+
+export function formatTaskBlock({ relative, zones }, picked) {
+  return picked.length
+    ? [`${TASK_MARKER}, ${relative}; source wins):`, ...picked.map((zone) => formatEntry(zone, zones))].join("\n")
+    : `${TASK_MARKER}): this repo's zone map is ${relative}; source wins.`;
+}
+
 /* The files one tool call touched, relative to root and inside it, as
  * { path, edit }. Claude names one file_path; a Codex apply_patch names the
  * files it adds, updates or moves to (a deleted file has nothing to route);

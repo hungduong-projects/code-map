@@ -197,7 +197,7 @@ test("route reads a 1.1.0 seen file as empty", () => {
   assert.ok(run("route.mjs", { session_id, prompt: BILLING }, { cwd }));
 });
 
-const HOOKS = ["route.mjs", "spawn.mjs", "touch.mjs", "session-start.mjs", "orphan-check.mjs"];
+const HOOKS = ["route.mjs", "spawn.mjs", "touch.mjs", "session-start.mjs", "orphan-check.mjs", "subagent-start.mjs"];
 
 test("hooks exit 0 and print nothing on invalid JSON", () => {
   const cwd = fixture();
@@ -236,6 +236,50 @@ test("spawn records a Codex spawn's fork mode, all when unset, and prints nothin
   assert.equal(JSON.parse(readFileSync(forkFile(session_id), "utf-8")), "none");
   assert.equal(spawn({ task_name: "scope", message: "gAAAAABencrypted" }), null);
   assert.equal(JSON.parse(readFileSync(forkFile(session_id), "utf-8")), "all");
+});
+
+const ZD = [
+  "id: ZD", "risk: low", "read_first: []", 'purpose: "Docs site."', 'paths: ["docs/**"]',
+  'entrypoints: ["docs/billing.md"]', "invariants: []", "deps: []", 'verify: "npm test d"',
+];
+const childStart = (cwd, session_id, fork, agent_id = "child1") => {
+  if (fork) writeFileSync(forkFile(session_id), JSON.stringify(fork));
+  return run("subagent-start.mjs", { session_id, agent_id, agent_type: "default", hook_event_name: "SubagentStart" }, { cwd });
+};
+
+test("subagent-start hands a Codex child that inherits nothing its parent's last 3 full zones, seen", () => {
+  const cwd = fixture({ map: mapText([ZA, ZB, ZC, ZD]) });
+  const session_id = session();
+  writeFileSync(seenFile(session_id), JSON.stringify({ zones: { ZC: "full", ZB: "full", ZA: "full", ZD: "full" }, blast: [] }));
+  const out = childStart(cwd, session_id, "none");
+  assert.equal(out.hookSpecificOutput.hookEventName, "SubagentStart");
+  const context = out.hookSpecificOutput.additionalContext;
+  assert.ok(context.startsWith("Zone context for this task (code-map, CODEMAP.md; source wins):\nZB (low): "));
+  assert.match(context, /\nZA \(high\): [^\n]+\n[\s\S]*\nZD \(low\): Docs site\./);
+  assert.doesNotMatch(context, /^ZC /m);
+  assert.equal(out.systemMessage, "code-map → subagent: ZB (low), ZA (high), ZD (low)");
+  assert.deepEqual(JSON.parse(readFileSync(join(TMP, `code-map-${session_id}-child1.json`), "utf-8")),
+    { zones: { ZB: "full", ZA: "full", ZD: "full" }, blast: [] });
+  assert.equal(touch(cwd, session_id, "Read", "a/x.ts", { agent_id: "child1" }), null, "the child's touch does not repeat ZA");
+});
+
+test("subagent-start points a child at the map when the parent holds no full zone", () => {
+  const cwd = fixture();
+  const session_id = session();
+  writeFileSync(seenFile(session_id), JSON.stringify({ zones: { ZB: "line" }, blast: [] }));
+  const out = childStart(cwd, session_id, "none");
+  assert.equal(out.hookSpecificOutput.additionalContext,
+    "Zone context for this task (code-map): this repo's zone map is CODEMAP.md; source wins.");
+  assert.equal(out.systemMessage, undefined);
+});
+
+test("subagent-start is silent for a full fork, without a fork file, and without a healthy map", () => {
+  const session_id = session();
+  writeFileSync(seenFile(session_id), JSON.stringify({ zones: { ZA: "full" }, blast: [] }));
+  assert.equal(childStart(fixture(), session_id, "all"), null);
+  assert.equal(childStart(fixture(), session(), null), null, "Claude Code writes no fork file");
+  assert.equal(childStart(fixture({ map: null }), session_id, "none"), null);
+  assert.equal(childStart(fixture({ map: mapText([ZA.filter((line) => !line.startsWith("verify:")), ZB, ZC]) }), session_id, "none"), null);
 });
 
 test("spawn is silent without a map or a prompt", () => {
