@@ -10,7 +10,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { dependents, formatBlast, formatEntry, formatIndex, formatLine, parseMap } from "../scripts/zones-core.mjs";
+import {
+  dependents, formatBlast, formatEntry, formatIndex, formatLine, namedIdentifiers, parseMap,
+} from "../scripts/zones-core.mjs";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 const script = (name) => join(REPO, "scripts", name);
@@ -107,6 +109,18 @@ test("formatIndex keeps the 1.1.0 intro and lists every zone", () => {
   assert.match(index, /^This repo has a code-zones map at CODEMAP\.md\. A prompt that moves into a\n/);
   assert.match(index, /source wins\. Zones:\n- ZA \(high\): Billing ledger and invoice export\.\n/);
   assert.match(index, /\n- ZC \(low\): Release scripts\.$/);
+});
+
+test("namedIdentifiers lists the code-shaped names in purpose and invariants, once each", () => {
+  const zone = {
+    purpose: "Serve PROTOCOL_VERSION to `wireShape` readers.",
+    invariants: [
+      "Call fetchLedger before read_rows; list the doc in read_first.",
+      "Run `npm run core:build`, never edit Title Case output; PROTOCOL_VERSION again.",
+    ],
+  };
+  assert.deepEqual(namedIdentifiers(zone), ["PROTOCOL_VERSION", "wireShape", "fetchLedger", "read_rows"]);
+  assert.deepEqual(namedIdentifiers(za), []);
 });
 
 test("route injects a fresh high-risk zone once per session, with a notice", () => {
@@ -304,6 +318,31 @@ test("zones-check reports the token budget and warns past it without failing", (
   const big = check(`${mapText()}\n${"Notes on the billing flow. ".repeat(400)}\n`);
   assert.equal(big.status, 0, big.stderr);
   assert.match(big.stderr, /code zones: warning, map ≈ \d+ tokens is over the 2,500-token budget/);
+});
+
+test("zones-check warns about names missing from a zone's and its deps' files without failing", () => {
+  const check = (map, files = {}) => {
+    const cwd = fixture({ map });
+    for (const [file, text] of Object.entries(files)) writeFileSync(join(cwd, file), text);
+    for (const args of [["init", "-q"], ["add", "."]]) assert.equal(spawnSync("git", args, { cwd }).status, 0);
+    return spawnSync(process.execPath, [script("zones-check.mjs")], { cwd, encoding: "utf-8" });
+  };
+
+  assert.doesNotMatch(check(mapText()).stderr, /named identifier/);
+
+  /* ZA's name is in its own file and ZB's ledgerTotal in its dep ZA; chartScale
+   * is nowhere, ZC does not depend on ZA, and RELEASE_TAG sits only in the map. */
+  const namedA = [...ZA.slice(0, 7), '  - "Bump LEDGER_VERSION on any schema change."', ...ZA.slice(7)];
+  const namedB = ZB.map((line) =>
+    (line === '  - "Totals come from the ledger."' ? '  - "Totals come from ledgerTotal, scaled by chartScale."' : line));
+  const namedC = ZC.map((line) => line
+    .replace('paths: ["c/**"]', 'paths: ["c/**", "CODEMAP.md"]')
+    .replace("invariants: []", 'invariants:\n  - "Release reads ledgerTotal, bumps RELEASE_TAG, then runs `npm run release`."'));
+  const stale = check(mapText([namedA, namedB, namedC]),
+    { "a/index.ts": "export const LEDGER_VERSION = 1;\n", "a/x.ts": "export const ledgerTotal = 0;\n" });
+  assert.equal(stale.status, 0, stale.stderr);
+  assert.match(stale.stdout, /^code zones: 3 zones, no problems\n/);
+  assert.match(stale.stderr, /code zones: warning — 3 named identifiers not found in their zone's files\n  ZB: chartScale\n  ZC: ledgerTotal, RELEASE_TAG\n/);
 });
 
 test("route ignores a background agent's task notification", () => {

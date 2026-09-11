@@ -44,7 +44,9 @@ scripts). MIT licensed.
   It costs the model no tokens.
 - `node scripts/zones-check.mjs` — CI-grade validation: unique path ownership,
   live globs, existing entrypoints and `read_first` files, declared deps. It
-  also prints the index and map token cost, and warns past 2,500 tokens.
+  also prints the index and map token cost, and warns past 2,500 tokens, or
+  when a code name in a zone's purpose or invariants (`PROTOCOL_VERSION`,
+  `fetchLedger`) appears in none of that zone's or its deps' files.
   Vendor it into a repo's CI to make map rot a build failure.
 
 ## Map shape

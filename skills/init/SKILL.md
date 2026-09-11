@@ -53,7 +53,9 @@ file, 8-15 zones, every tracked path owned by exactly one zone.
    from the repo root. Fix every problem — overlapping ownership means a glob
    is too broad, not that the check is wrong. Read the orphan warning list:
    deliberately unmapped files (unwired modules, scratch) stay orphans and get
-   one warning line in the map header; everything else joins a zone.
+   one warning line in the map header; everything else joins a zone. A code
+   name the check cannot find in its zone's or deps' files is a wrong or stale
+   fact: fix or reword it.
 5. **Wire the pointers.** If AGENTS.md exists, add one line telling agents to
    read the map before scoping (this is the bridge to harnesses without
    hooks). If the repo validates docs frontmatter or keeps an llms.txt, comply

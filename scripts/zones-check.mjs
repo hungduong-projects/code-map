@@ -8,7 +8,7 @@ import { execFile } from "node:child_process";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
 
-import { findMap, formatIndex, globRegex, parseMap } from "./zones-core.mjs";
+import { findMap, formatIndex, globRegex, namedIdentifiers, parseMap } from "./zones-core.mjs";
 
 const ROOT = process.cwd();
 const problems = [];
@@ -55,6 +55,24 @@ async function validate(zones, files) {
   return files.filter((path) => !owners.has(path) && !isExcludedOrphan(path));
 }
 
+/* Names a zone's prose asserts that neither its own files nor its deps' files
+ * contain: the likely stale facts. The map holds every name, so it is never
+ * searched. Runs on a valid map, so paths and deps are sound. */
+async function ungrounded(zones, files, mapFile) {
+  const byId = new Map(zones.map((zone) => [zone.id, zone]));
+  const owned = (zone) => files.filter((path) => path !== mapFile && zone.paths.some((glob) => globRegex(glob).test(path)));
+  const report = [];
+  for (const zone of zones) {
+    const names = namedIdentifiers(zone);
+    if (!names.length) continue;
+    const scope = [zone, ...zone.deps.map((id) => byId.get(id))].flatMap(owned);
+    const text = (await Promise.all(scope.map((path) => readFile(join(ROOT, path), "utf-8").catch(() => "")))).join("\n");
+    const missing = names.filter((name) => !text.includes(name));
+    if (missing.length) report.push({ id: zone.id, missing });
+  }
+  return report;
+}
+
 const mapPath = process.argv[2] ?? (await findMap(ROOT))?.path;
 if (!mapPath) {
   console.log("code zones: no map found — run /code-map:init to create one");
@@ -68,7 +86,8 @@ try {
   fail("map", `cannot read \`${mapPath}\``);
 }
 const zones = text ? parseMap(text, fail) : [];
-const orphans = await validate(zones, await gitFiles());
+const files = await gitFiles();
+const orphans = await validate(zones, files);
 
 if (problems.length) {
   console.error(`\ncode zones: ${problems.length} problem${problems.length === 1 ? "" : "s"}\n`);
@@ -88,4 +107,10 @@ if (orphans.length) {
   console.warn(`code zones: warning — ${orphans.length} tracked file${orphans.length === 1 ? "" : "s"} have no zone`);
   for (const path of orphans.slice(0, 20)) console.warn(`  ${path}`);
   if (orphans.length > 20) console.warn(`  ... and ${orphans.length - 20} more`);
+}
+const stale = await ungrounded(zones, files, relative(ROOT, mapPath));
+if (stale.length) {
+  const count = stale.reduce((total, { missing }) => total + missing.length, 0);
+  console.warn(`code zones: warning — ${count} named identifier${count === 1 ? "" : "s"} not found in their zone's files`);
+  for (const { id, missing } of stale) console.warn(`  ${id}: ${missing.join(", ")}`);
 }

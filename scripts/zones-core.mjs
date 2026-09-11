@@ -220,6 +220,16 @@ export function formatBlast(path, zone, zones) {
   return `code-map: ${path} is a ${zone.id} entrypoint used by ${users.map((user) => user.id).join(", ")}. verify: ${verify}`;
 }
 
+/* The code-shaped names a zone's prose asserts: SCREAMING_SNAKE, camelCase,
+ * and snake_case words in purpose and invariants, once each. Plain words and
+ * commands like `npm run core:build` don't match, and map keys like read_first
+ * are schema, not code. zones-check looks for each name in the zone's files. */
+const NAME = /\b(?:[A-Z][A-Z0-9]*_[A-Z0-9_]+|[a-z][a-z0-9]*[A-Z][A-Za-z0-9]*|[a-z][a-z0-9]*_[a-z0-9_]+)\b/g;
+export function namedIdentifiers(zone) {
+  const names = [zone.purpose, ...zone.invariants].join("\n").match(NAME) ?? [];
+  return [...new Set(names)].filter((name) => !REQUIRED.includes(name));
+}
+
 /* The session-start index. zones-check measures this same text for its
  * budget line. */
 export function formatIndex({ relative, zones }) {
