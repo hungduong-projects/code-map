@@ -61,7 +61,7 @@ function run(name, event, { cwd, env = {} }) {
   const result = spawnSync(process.execPath, [script(name)], {
     cwd,
     input: typeof event === "string" ? event : JSON.stringify({ cwd, ...event }),
-    env: { ...process.env, TMPDIR: TMP, CLAUDE_PLUGIN_DATA: "", ...env },
+    env: { ...process.env, TMPDIR: TMP, CLAUDE_PLUGIN_DATA: "", PLUGIN_ROOT: "", ...env },
     encoding: "utf-8",
   });
   assert.equal(result.status, 0, result.stderr);
@@ -396,6 +396,14 @@ test("session-start nudges once per unmapped git repo, from any subdirectory", (
   assert.deepEqual(run("session-start.mjs", { session_id: session(), source: "startup", cwd: notes }, { cwd: notes, env }),
     { systemMessage: NUDGE });
   assert.equal(run("session-start.mjs", { session_id: session(), source: "startup" }, { cwd, env }), null);
+});
+
+test("session-start names the skill the Codex way when Codex runs the hook", () => {
+  const cwd = fixture({ map: null });
+  mkdirSync(join(cwd, ".git"));
+  const env = { CLAUDE_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "code-map-data-")), PLUGIN_ROOT: REPO };
+  assert.deepEqual(run("session-start.mjs", { session_id: session(), source: "startup" }, { cwd, env }),
+    { systemMessage: "code-map: no zone map in this repo. Run $code-map:init to draft one." });
 });
 
 test("session-start skips the nudge on clear, without plugin data, outside git, and under a mapped root", () => {
