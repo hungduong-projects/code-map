@@ -145,9 +145,43 @@ test("route reads a 1.1.0 seen file as empty", () => {
   assert.ok(run("route.mjs", { session_id, prompt: BILLING }, { cwd }));
 });
 
-const HOOKS = ["route.mjs"];
+const HOOKS = ["route.mjs", "spawn.mjs"];
 
 test("hooks exit 0 and print nothing on invalid JSON", () => {
   const cwd = fixture();
   for (const name of HOOKS) assert.equal(run(name, "not json", { cwd }), null, name);
+});
+
+test("spawn appends routed zone entries to the subagent prompt and keeps the other fields", () => {
+  const cwd = fixture();
+  const tool_input = { description: "Scope billing", prompt: BILLING, subagent_type: "general-purpose", run_in_background: false };
+  const out = run("spawn.mjs", { session_id: session(), tool_name: "Agent", tool_input }, { cwd });
+  const { hookEventName, permissionDecision, updatedInput } = out.hookSpecificOutput;
+  assert.equal(hookEventName, "PreToolUse");
+  assert.equal(permissionDecision, undefined);
+  assert.deepEqual({ ...updatedInput, prompt: "" }, { ...tool_input, prompt: "" });
+  assert.ok(updatedInput.prompt.startsWith(`${BILLING}\n\nZone context for this task (code-map, CODEMAP.md; source wins):\nZA (high): `));
+  assert.match(updatedInput.prompt, /\n {2}used by: ZB\n/);
+  assert.equal(out.systemMessage, "code-map → subagent: ZA (high)");
+});
+
+test("spawn points unrouted prompts at the map without a notice, then skips marked prompts", () => {
+  const cwd = fixture();
+  const out = run("spawn.mjs", { session_id: session(), tool_name: "Agent", tool_input: { prompt: WEATHER } }, { cwd });
+  const { prompt } = out.hookSpecificOutput.updatedInput;
+  assert.equal(prompt, `${WEATHER}\n\nZone context for this task (code-map): this repo's zone map is CODEMAP.md; source wins.`);
+  assert.equal(out.systemMessage, undefined);
+  assert.equal(run("spawn.mjs", { session_id: session(), tool_name: "Agent", tool_input: { prompt } }, { cwd }), null);
+});
+
+test("spawn is silent without a map or a prompt", () => {
+  assert.equal(run("spawn.mjs", { tool_name: "Agent", tool_input: { prompt: BILLING } }, { cwd: fixture({ map: null }) }), null);
+  assert.equal(run("spawn.mjs", { tool_name: "Agent", tool_input: {} }, { cwd: fixture() }), null);
+});
+
+const hookScripts = (event) => JSON.parse(readFileSync(join(REPO, "hooks", "hooks.json"), "utf-8")).hooks[event]
+  .map((group) => [group.matcher, group.hooks.map((hook) => hook.command.match(/scripts\/([\w-]+\.mjs)/)[1])]);
+
+test("hooks.json wires each script to its event and matcher", () => {
+  assert.deepEqual(hookScripts("PreToolUse"), [["Agent", ["spawn.mjs"]]]);
 });
