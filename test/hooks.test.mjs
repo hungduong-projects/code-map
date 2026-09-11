@@ -145,7 +145,7 @@ test("route reads a 1.1.0 seen file as empty", () => {
   assert.ok(run("route.mjs", { session_id, prompt: BILLING }, { cwd }));
 });
 
-const HOOKS = ["route.mjs", "spawn.mjs", "touch.mjs"];
+const HOOKS = ["route.mjs", "spawn.mjs", "touch.mjs", "session-start.mjs", "orphan-check.mjs"];
 
 test("hooks exit 0 and print nothing on invalid JSON", () => {
   const cwd = fixture();
@@ -185,6 +185,8 @@ const hookScripts = (event) => JSON.parse(readFileSync(join(REPO, "hooks", "hook
 test("hooks.json wires each script to its event and matcher", () => {
   assert.deepEqual(hookScripts("PreToolUse"), [["Agent", ["spawn.mjs"]]]);
   assert.deepEqual(hookScripts("PostToolUse"), [["Write|Edit", ["orphan-check.mjs"]], ["Read|Edit|Write", ["touch.mjs"]]]);
+  assert.deepEqual(hookScripts("SessionStart"), [["startup|clear|compact", ["session-start.mjs"]]]);
+  assert.deepEqual(hookScripts("UserPromptSubmit"), [[undefined, ["route.mjs"]]]);
 });
 
 const touch = (cwd, session_id, tool_name, file, extra = {}) =>
@@ -235,4 +237,54 @@ test("touch ignores unowned files, the map, outside paths, missing paths, and un
   assert.equal(run("touch.mjs", { session_id, tool_name: "Read", tool_input: { file_path: "/elsewhere/a/x.ts" } }, { cwd }), null);
   assert.equal(run("touch.mjs", { session_id, tool_name: "Read", tool_input: {} }, { cwd }), null);
   assert.equal(touch(fixture({ map: null }), session(), "Read", "a/x.ts"), null);
+});
+
+const NUDGE = "code-map: no zone map in this repo. Run /code-map:init to draft one.";
+
+test("session-start injects the index with a ready notice and clears the thread's seen zones", () => {
+  const cwd = fixture();
+  const session_id = session();
+  writeFileSync(seenFile(session_id), JSON.stringify({ zones: { ZA: "full" }, blast: [] }));
+  const out = run("session-start.mjs", { session_id, source: "compact" }, { cwd });
+  assert.equal(out.hookSpecificOutput.additionalContext, formatIndex({ relative: "CODEMAP.md", zones }));
+  assert.equal(out.systemMessage, "code-map: 3 zones ready (CODEMAP.md)");
+  assert.ok(run("route.mjs", { session_id, prompt: BILLING }, { cwd }), "ZA routes again after the wipe");
+});
+
+test("session-start reports a broken map in one line to both model and user", () => {
+  const cwd = fixture({ map: mapText([ZA.filter((line) => !line.startsWith("verify:")), ZB, ZC]) });
+  const out = run("session-start.mjs", { session_id: session(), source: "startup" }, { cwd });
+  assert.equal(out.hookSpecificOutput.additionalContext, out.systemMessage);
+  assert.match(out.systemMessage, new RegExp(
+    "^code-map: CODEMAP\\.md has 1 problem, so zone routing is off this session\\. " +
+    "First: \\[parse\\] zone 1: missing `verify`\\. Details: node \".+/scripts/zones-check\\.mjs\"$"));
+});
+
+test("session-start nudges once per unmapped git repo, from any subdirectory", () => {
+  const cwd = fixture({ map: null });
+  mkdirSync(join(cwd, ".git"));
+  const env = { CLAUDE_PLUGIN_DATA: join(mkdtempSync(join(tmpdir(), "code-map-data-")), "plugin") };
+  const notes = join(cwd, "notes");
+  assert.deepEqual(run("session-start.mjs", { session_id: session(), source: "startup", cwd: notes }, { cwd: notes, env }),
+    { systemMessage: NUDGE });
+  assert.equal(run("session-start.mjs", { session_id: session(), source: "startup" }, { cwd, env }), null);
+});
+
+test("session-start skips the nudge on clear, without plugin data, outside git, and under a mapped root", () => {
+  const env = { CLAUDE_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "code-map-data-")) };
+  const unmapped = fixture({ map: null });
+  mkdirSync(join(unmapped, ".git"));
+  assert.equal(run("session-start.mjs", { session_id: session(), source: "clear" }, { cwd: unmapped, env }), null);
+  assert.equal(run("session-start.mjs", { session_id: session(), source: "startup" }, { cwd: unmapped }), null);
+  assert.equal(run("session-start.mjs", { session_id: session(), source: "startup" }, { cwd: fixture({ map: null }), env }), null);
+  const mapped = fixture();
+  mkdirSync(join(mapped, ".git"));
+  const notes = join(mapped, "notes");
+  assert.equal(run("session-start.mjs", { session_id: session(), source: "startup", cwd: notes }, { cwd: notes, env }), null);
+});
+
+test("orphan-check still flags an edit to a file no zone owns", () => {
+  const cwd = fixture();
+  const out = run("orphan-check.mjs", { tool_name: "Edit", tool_input: { file_path: join(cwd, "notes/todo.md") } }, { cwd });
+  assert.match(out.hookSpecificOutput.additionalContext, /^`notes\/todo\.md` belongs to no zone in CODEMAP\.md\./);
 });

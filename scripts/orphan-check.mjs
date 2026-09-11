@@ -6,13 +6,9 @@
 
 import { relative } from "node:path";
 
-import { loadZones, owningZone } from "./zones-core.mjs";
+import { loadZones, owningZone, readInput } from "./zones-core.mjs";
 
-const input = JSON.parse(await new Promise((resolve) => {
-  let data = "";
-  process.stdin.on("data", (chunk) => (data += chunk));
-  process.stdin.on("end", () => resolve(data || "{}"));
-}));
+const input = await readInput();
 
 const filePath = input.tool_input?.file_path;
 const root = input.cwd ?? process.cwd();
