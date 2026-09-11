@@ -1,6 +1,6 @@
 {
   "name": "code-map",
-  "description": "Zone maps for coding agents: route every edit through a checked-in, validated map of the repo.",
+  "description": "Zone maps for coding agents: the right read-first files, invariants and verify command before the first edit.",
   "owner": {
     "name": "Harry Duong",
     "url": "https://github.com/hungduong-projects"
@@ -10,8 +10,8 @@
       "name": "code-map",
       "source": "./",
       "displayName": "Code Map",
-      "description": "A checked-in zone map agents read before they touch a repo: /code-map:init drafts it, hooks inject it, zones-check keeps it honest.",
-      "version": "1.1.0",
+      "description": "Coding agents re-discover your repo every session and miss what they must not break. code-map hands each agent, subagent and file edit the right zone from one checked-in, validated map.",
+      "version": "1.2.0",
       "license": "MIT",
       "homepage": "https://github.com/hungduong-projects/code-map",
       "category": "productivity",
