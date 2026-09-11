@@ -25,6 +25,10 @@ scripts). MIT licensed.
   (`docs/reference/code-zones.md`, or `CODEMAP.md` at the root).
 - **SessionStart hook** — injects the zone index whenever a mapped repo opens.
   Repos without a map: silent no-op.
+- **UserPromptSubmit hook** — when a prompt moves into a high-risk zone or
+  spans zones the session has not seen, injects just those zones' entries, so
+  the agent scopes from `read_first` and entrypoints without opening the map.
+  Same-zone follow-ups and single low-risk edits stay silent.
 - **PostToolUse hook** — an edit landing in a file no zone owns gets flagged:
   update the map or say the file is deliberately unmapped.
 - `node scripts/zones-check.mjs` — CI-grade validation: unique path ownership,

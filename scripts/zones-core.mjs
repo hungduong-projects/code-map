@@ -114,6 +114,60 @@ export function owningZone(zones, path) {
   return null;
 }
 
+const STOP = new Set(("the and for with that this from into what where which when how does should would could " +
+  "about have make need want change fix add update file files code test tests use using not all any " +
+  "read write edit only first scope under over new just also must keep still same other some more please " +
+  "tsx jsx mjs json yaml").split(" "));
+const words = (text) => (text.toLowerCase().match(/[a-z][a-z0-9]{2,}/g) ?? []).filter((word) => !STOP.has(word));
+/* A zone's own purpose and paths speak for it; words that only appear in its
+ * read_first names or invariants count half, so one incidental word there
+ * cannot pull a zone into the route. */
+const FIELDS = [["purpose", 1], ["paths", 1], ["entrypoints", 1], ["read_first", 0.5], ["invariants", 0.5]];
+const matchWeight = (vocab, word) => {
+  let weight = 0;
+  for (const [known, value] of vocab) {
+    const match = known === word ||
+      (Math.min(word.length, known.length) >= 3 && Math.abs(word.length - known.length) <= 3 &&
+        (known.startsWith(word) || word.startsWith(known)));
+    if (match) weight = Math.max(weight, value);
+  }
+  return weight;
+};
+
+/* Lexical routing: score each zone by the prompt words its text shares,
+ * weighted by how few zones share them, plus a strong bonus when the prompt
+ * names a path the zone owns. Sorted best first. */
+export function scoreZones(zones, prompt) {
+  const vocabs = zones.map((zone) => {
+    const vocab = new Map();
+    for (const [field, weight] of FIELDS) {
+      for (const word of words([zone[field]].flat().join(" "))) vocab.set(word, Math.max(vocab.get(word) ?? 0, weight));
+    }
+    return vocab;
+  });
+  const asked = new Set(words(prompt));
+  const named = prompt.match(/[\w.[\]-]*\/[\w./[\]-]+|[\w-]+\.[a-z]{1,4}\b/g) ?? [];
+
+  return zones.map((zone, index) => {
+    let score = 0;
+    for (const word of asked) {
+      const shared = vocabs.filter((vocab) => matchWeight(vocab, word)).length;
+      if (shared) score += matchWeight(vocabs[index], word) * Math.log(1 + zones.length / shared);
+    }
+    if (named.some((path) => owningZone([zone], path))) score += 10;
+    return { zone, score };
+  }).sort((a, b) => b.score - a.score);
+}
+
+/* The zones a prompt touches: the best match plus any within half its score,
+ * or nothing when no zone clears more than one distinctive word. */
+export function routeZones(zones, prompt, limit = 3) {
+  const scored = scoreZones(zones, prompt);
+  const best = scored[0]?.score ?? 0;
+  if (best < 3) return [];
+  return scored.filter(({ score }) => score >= best / 2).slice(0, limit).map(({ zone }) => zone);
+}
+
 export async function loadZones(root) {
   const map = await findMap(root);
   if (!map) return null;

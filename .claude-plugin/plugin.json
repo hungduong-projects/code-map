@@ -2,7 +2,7 @@
   "name": "code-map",
   "displayName": "Code Map",
   "description": "A checked-in zone map agents read before they touch a repo: /code-map:init drafts it, hooks inject it, zones-check keeps it honest.",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "author": {
     "name": "Harry Duong",
     "url": "https://github.com/hungduong-projects"
