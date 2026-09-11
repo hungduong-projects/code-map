@@ -5,47 +5,25 @@
  * high-risk zone, or a prompt spanning zones. Same-zone follow-ups and single
  * low-risk edits stay silent, as do repos without a map. */
 
-import { readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { emit, formatEntry, loadSeen, loadZones, readInput, routeZones, saveSeen } from "./zones-core.mjs";
 
-import { loadZones, routeZones } from "./zones-core.mjs";
-
-const input = JSON.parse(await new Promise((resolve) => {
-  let data = "";
-  process.stdin.on("data", (chunk) => (data += chunk));
-  process.stdin.on("end", () => resolve(data || "{}"));
-}));
-
+const input = await readInput();
 const loaded = await loadZones(input.cwd ?? process.cwd()).catch(() => null);
 if (!loaded || loaded.problems.length || !input.prompt) process.exit(0);
 
 const routed = routeZones(loaded.zones, input.prompt);
-const seenPath = join(tmpdir(), `code-map-${input.session_id}.json`);
-const seen = new Set(JSON.parse(await readFile(seenPath, "utf-8").catch(() => "[]")));
-const fresh = routed.filter((zone) => !seen.has(zone.id));
+const seen = await loadSeen(input.session_id, input.agent_id);
+const fresh = routed.filter((zone) => seen.zones[zone.id] !== "full");
 if (!fresh.length || (routed.length < 2 && fresh[0].risk !== "high")) process.exit(0);
-await writeFile(seenPath, JSON.stringify([...seen, ...fresh.map((zone) => zone.id)]));
+for (const zone of fresh) seen.zones[zone.id] = "full";
+await saveSeen(input.session_id, input.agent_id, seen);
 
-const list = (values) => (values.length ? values.join(", ") : "none");
-const entries = fresh.map((zone) => [
-  `${zone.id} (${zone.risk}): ${zone.purpose}`,
-  `  read_first: ${list(zone.read_first)}`,
-  `  entrypoints: ${list(zone.entrypoints)}`,
-  `  paths: ${list(zone.paths)}`,
-  ...zone.invariants.map((invariant) => `  invariant: ${invariant}`),
-  `  deps: ${list(zone.deps)}`,
-  `  verify: ${zone.verify}`,
-].join("\n"));
-
-console.log(JSON.stringify({
-  hookSpecificOutput: {
-    hookEventName: "UserPromptSubmit",
-    additionalContext: [
-      `code-map: this prompt enters ${routed.map((zone) => zone.id).join(" + ")}. The entries below are the map's`,
-      `full record for the zones not already in context, so skip ${loaded.relative} unless`,
-      `the route looks wrong. Open only the files the task needs; source wins.`,
-      ...entries,
-    ].join("\n"),
-  },
-}));
+emit("UserPromptSubmit", {
+  context: [
+    `code-map: this prompt enters ${routed.map((zone) => zone.id).join(" + ")}. The entries below are the map's`,
+    `full record for the zones not already in context, so skip ${loaded.relative} unless`,
+    `the route looks wrong. Open only the files the task needs; source wins.`,
+    ...fresh.map((zone) => formatEntry(zone, loaded.zones)),
+  ].join("\n"),
+  notice: `code-map → ${routed.map((zone) => `${zone.id} (${zone.risk})`).join(", ")}`,
+});

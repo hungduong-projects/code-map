@@ -108,3 +108,46 @@ test("formatIndex keeps the 1.1.0 intro and lists every zone", () => {
   assert.match(index, /source wins\. Zones:\n- ZA \(high\): Billing ledger and invoice export\.\n/);
   assert.match(index, /\n- ZC \(low\): Release scripts\.$/);
 });
+
+test("route injects a fresh high-risk zone once per session, with a notice", () => {
+  const cwd = fixture();
+  const session_id = session();
+  const first = run("route.mjs", { session_id, prompt: BILLING }, { cwd });
+  assert.equal(first.hookSpecificOutput.hookEventName, "UserPromptSubmit");
+  assert.match(first.hookSpecificOutput.additionalContext, /^code-map: this prompt enters ZA\. The entries below/);
+  assert.match(first.hookSpecificOutput.additionalContext, /\n {2}used by: ZB\n/);
+  assert.equal(first.systemMessage, "code-map → ZA (high)");
+  assert.deepEqual(JSON.parse(readFileSync(seenFile(session_id), "utf-8")), { zones: { ZA: "full" }, blast: [] });
+  assert.equal(run("route.mjs", { session_id, prompt: BILLING }, { cwd }), null);
+});
+
+test("route stays silent for one low-risk zone and for unrelated prompts", () => {
+  const cwd = fixture();
+  assert.equal(run("route.mjs", { session_id: session(), prompt: "Restyle the dashboard widgets charts." }, { cwd }), null);
+  assert.equal(run("route.mjs", { session_id: session(), prompt: WEATHER }, { cwd }), null);
+});
+
+test("route upgrades a zone seen as one line to its full entry", () => {
+  const cwd = fixture();
+  const session_id = session();
+  writeFileSync(seenFile(session_id), JSON.stringify({ zones: { ZB: "line" }, blast: [] }));
+  const out = run("route.mjs", { session_id, prompt: "Rework the dashboard widgets charts and the release scripts." }, { cwd });
+  assert.match(out.hookSpecificOutput.additionalContext, /\nZB \(low\): Dashboard widgets and charts\.\n/);
+  assert.match(out.hookSpecificOutput.additionalContext, /\nZC \(low\): Release scripts\.\n/);
+  assert.equal(out.systemMessage, "code-map → ZB (low), ZC (low)");
+  assert.deepEqual(JSON.parse(readFileSync(seenFile(session_id), "utf-8")).zones, { ZB: "full", ZC: "full" });
+});
+
+test("route reads a 1.1.0 seen file as empty", () => {
+  const cwd = fixture();
+  const session_id = session();
+  writeFileSync(seenFile(session_id), JSON.stringify(["ZA"]));
+  assert.ok(run("route.mjs", { session_id, prompt: BILLING }, { cwd }));
+});
+
+const HOOKS = ["route.mjs"];
+
+test("hooks exit 0 and print nothing on invalid JSON", () => {
+  const cwd = fixture();
+  for (const name of HOOKS) assert.equal(run(name, "not json", { cwd }), null, name);
+});

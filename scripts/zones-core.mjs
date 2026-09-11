@@ -1,7 +1,8 @@
 /* Shared parsing for the code-zones map. Dependency-free so hooks and CI can
  * run it before any install step. */
 
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /* Where a repo may keep its map, first hit wins. */
@@ -232,4 +233,46 @@ export function formatIndex({ relative, zones }) {
       .filter((zone) => zone.id && zone.purpose)
       .map((zone) => `- ${zone.id} (${zone.risk ?? "low"}): ${zone.purpose}`),
   ].join("\n");
+}
+
+/* Hook input arrives as one JSON object on stdin. Anything else is no event
+ * to act on, so the hook ends quietly. */
+export async function readInput() {
+  let data = "";
+  for await (const chunk of process.stdin) data += chunk;
+  try {
+    const input = JSON.parse(data);
+    if (input && typeof input === "object") return input;
+  } catch {}
+  process.exit(0);
+}
+
+/* One JSON line for Claude Code: context for the model, a notice the user
+ * sees at no token cost, and event fields such as updatedInput. Callers emit
+ * last and let the process end, so piped stdout flushes. */
+export function emit(event, { context = "", notice = "", extra = {} } = {}) {
+  const specific = { ...(context ? { additionalContext: context } : {}), ...extra };
+  console.log(JSON.stringify({
+    ...(Object.keys(specific).length ? { hookSpecificOutput: { hookEventName: event, ...specific } } : {}),
+    ...(notice ? { systemMessage: notice } : {}),
+  }));
+}
+
+/* What a thread already holds: zones map to "full" once their entry went in
+ * and "line" after a one-line touch; blast lists zones whose entrypoint edit
+ * was already reported. A subagent keeps its own file, since it starts
+ * without the main thread's context. Any other shape, including the 1.1.0
+ * array, reads as empty. */
+const safe = (value) => String(value ?? "").replace(/[^\w-]/g, "");
+export const seenPath = (session, agent) =>
+  join(tmpdir(), `code-map-${safe(session)}${agent ? `-${safe(agent)}` : ""}.json`);
+
+export async function loadSeen(session, agent) {
+  const seen = await readFile(seenPath(session, agent), "utf-8").then(JSON.parse).catch(() => null);
+  const valid = seen?.zones && typeof seen.zones === "object" && !Array.isArray(seen.zones) && Array.isArray(seen.blast);
+  return valid ? seen : { zones: {}, blast: [] };
+}
+
+export async function saveSeen(session, agent, seen) {
+  await writeFile(seenPath(session, agent), JSON.stringify(seen)).catch(() => {});
 }
