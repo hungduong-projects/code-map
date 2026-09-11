@@ -8,8 +8,13 @@
 import { emit, formatEntry, loadSeen, loadZones, readInput, routeZones, saveSeen } from "./zones-core.mjs";
 
 const input = await readInput();
+/* A background agent's result re-enters as a <task-notification> prompt: the
+ * agent's own report, not a new task, so it earns no entries. */
+if (typeof input.prompt !== "string" || !input.prompt || input.prompt.trimStart().startsWith("<task-notification>")) {
+  process.exit(0);
+}
 const loaded = await loadZones(input.cwd ?? process.cwd()).catch(() => null);
-if (!loaded || loaded.problems.length || !input.prompt) process.exit(0);
+if (!loaded || loaded.problems.length) process.exit(0);
 
 const routed = routeZones(loaded.zones, input.prompt);
 const seen = await loadSeen(input.session_id, input.agent_id);

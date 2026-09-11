@@ -305,3 +305,8 @@ test("zones-check reports the token budget and warns past it without failing", (
   assert.equal(big.status, 0, big.stderr);
   assert.match(big.stderr, /code zones: warning, map ≈ \d+ tokens is over the 2,500-token budget/);
 });
+
+test("route ignores a background agent's task notification", () => {
+  const prompt = `<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n<result>${BILLING}</result>\n</task-notification>`;
+  assert.equal(run("route.mjs", { session_id: session(), prompt }, { cwd: fixture() }), null);
+});
