@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  dependents, formatBlast, formatEntry, formatIndex, formatLine, namedIdentifiers, parseMap,
+  dependents, formatBlast, formatEntry, formatIndex, formatLine, namedIdentifiers, parseMap, touchedFiles,
 } from "../scripts/zones-core.mjs";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -121,6 +121,44 @@ test("namedIdentifiers lists the code-shaped names in purpose and invariants, on
   };
   assert.deepEqual(namedIdentifiers(zone), ["PROTOCOL_VERSION", "wireShape", "fetchLedger", "read_rows"]);
   assert.deepEqual(namedIdentifiers(za), []);
+});
+
+const reads = (...paths) => paths.map((path) => ({ path, edit: false }));
+const edits = (...paths) => paths.map((path) => ({ path, edit: true }));
+
+test("touchedFiles takes Claude's file path, relative to the repo and inside it", async () => {
+  const cwd = fixture();
+  const files = (tool_name, tool_input) => touchedFiles({ tool_name, tool_input }, cwd);
+  assert.deepEqual(await files("Read", { file_path: join(cwd, "a/x.ts") }), reads("a/x.ts"));
+  assert.deepEqual(await files("Edit", { file_path: join(cwd, "a/x.ts") }), edits("a/x.ts"));
+  assert.deepEqual(await files("Write", { file_path: "b/new.ts" }), edits("b/new.ts"));
+  assert.deepEqual(await files("Read", { file_path: "/elsewhere/a/x.ts" }), []);
+  assert.deepEqual(await files("Read", {}), []);
+});
+
+test("touchedFiles lists the files a Codex patch adds, updates or moves to, once each, but not deletes", async () => {
+  const cwd = fixture();
+  const command = [
+    "*** Begin Patch", `*** Update File: ${join(cwd, "a/index.ts")}`, "@@", "+// rounding",
+    "*** Add File: notes/new.md", "+hello", `*** Delete File: ${join(cwd, "c/release.sh")}`,
+    "*** Update File: b/chart.ts", "*** Move to: b/graph.ts", `*** Update File: ${join(cwd, "a/index.ts")}`, "*** End Patch",
+  ].join("\n");
+  assert.deepEqual(await touchedFiles({ tool_name: "apply_patch", tool_input: { command } }, cwd),
+    edits("a/index.ts", "notes/new.md", "b/chart.ts", "b/graph.ts"));
+});
+
+test("touchedFiles lists the existing repo files plain shell reads name", async () => {
+  const cwd = fixture();
+  const outside = join(mkdtempSync(join(tmpdir(), "code-map-out-")), "o.ts");
+  writeFileSync(outside, "");
+  const bash = (command) => touchedFiles({ tool_name: "Bash", tool_input: { command } }, cwd);
+  assert.deepEqual(await bash("cat a/x.ts"), reads("a/x.ts"));
+  assert.deepEqual(await bash("sed -n '1,80p' a/x.ts"), reads("a/x.ts"));
+  assert.deepEqual(await bash(`nl -ba "${join(cwd, "a/x.ts")}" | sed -n '1,40p'`), reads("a/x.ts"));
+  assert.deepEqual(await bash("head -n 50 a/x.ts b/chart.ts && tail a/x.ts"), reads("a/x.ts", "b/chart.ts"));
+  for (const command of ["cd a && cat x.ts", "cat a/x.ts > out.txt", "cat $(ls a)", "cat a/missing.ts", `cat ${outside}`, "rg ledger a", "ls a"]) {
+    assert.deepEqual(await bash(command), [], command);
+  }
 });
 
 test("route injects a fresh high-risk zone once per session, with a notice", () => {

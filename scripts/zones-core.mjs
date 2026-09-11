@@ -1,9 +1,9 @@
 /* Shared parsing for the code-zones map. Dependency-free so hooks and CI can
  * run it before any install step. */
 
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 /* Where a repo may keep its map, first hit wins. */
 export const MAP_LOCATIONS = [
@@ -243,6 +243,41 @@ export function formatIndex({ relative, zones }) {
       .filter((zone) => zone.id && zone.purpose)
       .map((zone) => `- ${zone.id} (${zone.risk ?? "low"}): ${zone.purpose}`),
   ].join("\n");
+}
+
+/* The files one tool call touched, relative to root and inside it, as
+ * { path, edit }. Claude names one file_path; a Codex apply_patch names the
+ * files it adds, updates or moves to (a deleted file has nothing to route);
+ * a shell command counts when a segment is a plain cat, head, tail, sed or nl
+ * of existing files. Substitutions, redirects and a cd make shell paths
+ * uncertain, so those read as nothing. */
+const READERS = new Set(["cat", "head", "tail", "sed", "nl"]);
+
+export async function touchedFiles({ tool_name: tool, tool_input: args = {} }, root) {
+  const files = [];
+  if (["Read", "Edit", "Write"].includes(tool) && typeof args.file_path === "string") {
+    files.push({ path: args.file_path, edit: tool !== "Read" });
+  } else if (tool === "apply_patch" && typeof args.command === "string") {
+    for (const [, path] of args.command.matchAll(/^\*\*\* (?:Add File|Update File|Move to): (.+)$/gm)) {
+      files.push({ path: path.trim(), edit: true });
+    }
+  } else if (tool === "Bash" && typeof args.command === "string" && !/\$\(|`|>|<</.test(args.command)) {
+    for (const segment of args.command.split(/&&|\|\||[|;\n]/)) {
+      const [first, ...rest] = (segment.match(/'[^']*'|"[^"]*"|[^\s'"]+/g) ?? [])
+        .map((word) => word.replace(/^(['"])(.*)\1$/, "$2"));
+      if (first === "cd") break;
+      if (!READERS.has(first)) continue;
+      for (const word of rest.filter((word) => !word.startsWith("-"))) {
+        if (await stat(resolve(root, word)).then((info) => info.isFile(), () => false)) files.push({ path: word, edit: false });
+      }
+    }
+  }
+  const unique = new Map();
+  for (const { path, edit } of files) {
+    const inside = relative(root, resolve(root, path));
+    if (inside && !inside.startsWith("..") && !unique.has(inside)) unique.set(inside, { path: inside, edit });
+  }
+  return [...unique.values()];
 }
 
 /* Hook input arrives as one JSON object on stdin. Anything else is no event
