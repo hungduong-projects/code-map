@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  dependents, formatBlast, formatEntry, formatIndex, formatLine, namedIdentifiers, parseMap,
+  dependents, formatBlast, formatEntry, formatIndex, formatLine, namedIdentifiers, parseMap, touchedFiles,
 } from "../scripts/zones-core.mjs";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -61,7 +61,7 @@ function run(name, event, { cwd, env = {} }) {
   const result = spawnSync(process.execPath, [script(name)], {
     cwd,
     input: typeof event === "string" ? event : JSON.stringify({ cwd, ...event }),
-    env: { ...process.env, TMPDIR: TMP, CLAUDE_PLUGIN_DATA: "", ...env },
+    env: { ...process.env, TMPDIR: TMP, CLAUDE_PLUGIN_DATA: "", PLUGIN_ROOT: "", ...env },
     encoding: "utf-8",
   });
   assert.equal(result.status, 0, result.stderr);
@@ -123,6 +123,44 @@ test("namedIdentifiers lists the code-shaped names in purpose and invariants, on
   assert.deepEqual(namedIdentifiers(za), []);
 });
 
+const reads = (...paths) => paths.map((path) => ({ path, edit: false }));
+const edits = (...paths) => paths.map((path) => ({ path, edit: true }));
+
+test("touchedFiles takes Claude's file path, relative to the repo and inside it", async () => {
+  const cwd = fixture();
+  const files = (tool_name, tool_input) => touchedFiles({ tool_name, tool_input }, cwd);
+  assert.deepEqual(await files("Read", { file_path: join(cwd, "a/x.ts") }), reads("a/x.ts"));
+  assert.deepEqual(await files("Edit", { file_path: join(cwd, "a/x.ts") }), edits("a/x.ts"));
+  assert.deepEqual(await files("Write", { file_path: "b/new.ts" }), edits("b/new.ts"));
+  assert.deepEqual(await files("Read", { file_path: "/elsewhere/a/x.ts" }), []);
+  assert.deepEqual(await files("Read", {}), []);
+});
+
+test("touchedFiles lists the files a Codex patch adds, updates or moves to, once each, but not deletes", async () => {
+  const cwd = fixture();
+  const command = [
+    "*** Begin Patch", `*** Update File: ${join(cwd, "a/index.ts")}`, "@@", "+// rounding",
+    "*** Add File: notes/new.md", "+hello", `*** Delete File: ${join(cwd, "c/release.sh")}`,
+    "*** Update File: b/chart.ts", "*** Move to: b/graph.ts", `*** Update File: ${join(cwd, "a/index.ts")}`, "*** End Patch",
+  ].join("\n");
+  assert.deepEqual(await touchedFiles({ tool_name: "apply_patch", tool_input: { command } }, cwd),
+    edits("a/index.ts", "notes/new.md", "b/chart.ts", "b/graph.ts"));
+});
+
+test("touchedFiles lists the existing repo files plain shell reads name", async () => {
+  const cwd = fixture();
+  const outside = join(mkdtempSync(join(tmpdir(), "code-map-out-")), "o.ts");
+  writeFileSync(outside, "");
+  const bash = (command) => touchedFiles({ tool_name: "Bash", tool_input: { command } }, cwd);
+  assert.deepEqual(await bash("cat a/x.ts"), reads("a/x.ts"));
+  assert.deepEqual(await bash("sed -n '1,80p' a/x.ts"), reads("a/x.ts"));
+  assert.deepEqual(await bash(`nl -ba "${join(cwd, "a/x.ts")}" | sed -n '1,40p'`), reads("a/x.ts"));
+  assert.deepEqual(await bash("head -n 50 a/x.ts b/chart.ts && tail a/x.ts"), reads("a/x.ts", "b/chart.ts"));
+  for (const command of ["cd a && cat x.ts", "cat a/x.ts > out.txt", "cat $(ls a)", "cat a/missing.ts", `cat ${outside}`, "rg ledger a", "ls a"]) {
+    assert.deepEqual(await bash(command), [], command);
+  }
+});
+
 test("route injects a fresh high-risk zone once per session, with a notice", () => {
   const cwd = fixture();
   const session_id = session();
@@ -159,7 +197,7 @@ test("route reads a 1.1.0 seen file as empty", () => {
   assert.ok(run("route.mjs", { session_id, prompt: BILLING }, { cwd }));
 });
 
-const HOOKS = ["route.mjs", "spawn.mjs", "touch.mjs", "session-start.mjs", "orphan-check.mjs"];
+const HOOKS = ["route.mjs", "spawn.mjs", "touch.mjs", "session-start.mjs", "orphan-check.mjs", "subagent-start.mjs"];
 
 test("hooks exit 0 and print nothing on invalid JSON", () => {
   const cwd = fixture();
@@ -188,6 +226,62 @@ test("spawn points unrouted prompts at the map without a notice, then skips mark
   assert.equal(run("spawn.mjs", { session_id: session(), tool_name: "Agent", tool_input: { prompt } }, { cwd }), null);
 });
 
+const forkFile = (session_id) => join(TMP, `code-map-${session_id}-fork.json`);
+
+test("spawn records a Codex spawn's fork mode, all when unset, and prints nothing", () => {
+  const cwd = fixture({ map: null });
+  const session_id = session();
+  const spawn = (tool_input) => run("spawn.mjs", { session_id, tool_name: "collaborationspawn_agent", tool_input }, { cwd });
+  assert.equal(spawn({ task_name: "scope", fork_turns: "none", message: "gAAAAABencrypted" }), null);
+  assert.equal(JSON.parse(readFileSync(forkFile(session_id), "utf-8")), "none");
+  assert.equal(spawn({ task_name: "scope", message: "gAAAAABencrypted" }), null);
+  assert.equal(JSON.parse(readFileSync(forkFile(session_id), "utf-8")), "all");
+});
+
+const ZD = [
+  "id: ZD", "risk: low", "read_first: []", 'purpose: "Docs site."', 'paths: ["docs/**"]',
+  'entrypoints: ["docs/billing.md"]', "invariants: []", "deps: []", 'verify: "npm test d"',
+];
+const childStart = (cwd, session_id, fork, agent_id = "child1") => {
+  if (fork) writeFileSync(forkFile(session_id), JSON.stringify(fork));
+  return run("subagent-start.mjs", { session_id, agent_id, agent_type: "default", hook_event_name: "SubagentStart" }, { cwd });
+};
+
+test("subagent-start hands a Codex child that inherits nothing its parent's last 3 full zones, seen", () => {
+  const cwd = fixture({ map: mapText([ZA, ZB, ZC, ZD]) });
+  const session_id = session();
+  writeFileSync(seenFile(session_id), JSON.stringify({ zones: { ZC: "full", ZB: "full", ZA: "full", ZD: "full" }, blast: [] }));
+  const out = childStart(cwd, session_id, "none");
+  assert.equal(out.hookSpecificOutput.hookEventName, "SubagentStart");
+  const context = out.hookSpecificOutput.additionalContext;
+  assert.ok(context.startsWith("Zone context for this task (code-map, CODEMAP.md; source wins):\nZB (low): "));
+  assert.match(context, /\nZA \(high\): [^\n]+\n[\s\S]*\nZD \(low\): Docs site\./);
+  assert.doesNotMatch(context, /^ZC /m);
+  assert.equal(out.systemMessage, "code-map → subagent: ZB (low), ZA (high), ZD (low)");
+  assert.deepEqual(JSON.parse(readFileSync(join(TMP, `code-map-${session_id}-child1.json`), "utf-8")),
+    { zones: { ZB: "full", ZA: "full", ZD: "full" }, blast: [] });
+  assert.equal(touch(cwd, session_id, "Read", "a/x.ts", { agent_id: "child1" }), null, "the child's touch does not repeat ZA");
+});
+
+test("subagent-start points a child at the map when the parent holds no full zone", () => {
+  const cwd = fixture();
+  const session_id = session();
+  writeFileSync(seenFile(session_id), JSON.stringify({ zones: { ZB: "line" }, blast: [] }));
+  const out = childStart(cwd, session_id, "none");
+  assert.equal(out.hookSpecificOutput.additionalContext,
+    "Zone context for this task (code-map): this repo's zone map is CODEMAP.md; source wins.");
+  assert.equal(out.systemMessage, undefined);
+});
+
+test("subagent-start is silent for a full fork, without a fork file, and without a healthy map", () => {
+  const session_id = session();
+  writeFileSync(seenFile(session_id), JSON.stringify({ zones: { ZA: "full" }, blast: [] }));
+  assert.equal(childStart(fixture(), session_id, "all"), null);
+  assert.equal(childStart(fixture(), session(), null), null, "Claude Code writes no fork file");
+  assert.equal(childStart(fixture({ map: null }), session_id, "none"), null);
+  assert.equal(childStart(fixture({ map: mapText([ZA.filter((line) => !line.startsWith("verify:")), ZB, ZC]) }), session_id, "none"), null);
+});
+
 test("spawn is silent without a map or a prompt", () => {
   assert.equal(run("spawn.mjs", { tool_name: "Agent", tool_input: { prompt: BILLING } }, { cwd: fixture({ map: null }) }), null);
   assert.equal(run("spawn.mjs", { tool_name: "Agent", tool_input: {} }, { cwd: fixture() }), null);
@@ -197,10 +291,14 @@ const hookScripts = (event) => JSON.parse(readFileSync(join(REPO, "hooks", "hook
   .map((group) => [group.matcher, group.hooks.map((hook) => hook.command.match(/scripts\/([\w-]+\.mjs)/)[1])]);
 
 test("hooks.json wires each script to its event and matcher", () => {
-  assert.deepEqual(hookScripts("PreToolUse"), [["Agent", ["spawn.mjs"]]]);
-  assert.deepEqual(hookScripts("PostToolUse"), [["Write|Edit", ["orphan-check.mjs"]], ["Read|Edit|Write", ["touch.mjs"]]]);
+  assert.deepEqual(hookScripts("PreToolUse"), [["Agent|.*spawn_agent", ["spawn.mjs"]]]);
+  assert.deepEqual(hookScripts("PostToolUse"), [["Write|Edit", ["orphan-check.mjs"]], ["Read|Edit|Write|Bash", ["touch.mjs"]]]);
   assert.deepEqual(hookScripts("SessionStart"), [["startup|clear|compact", ["session-start.mjs"]]]);
   assert.deepEqual(hookScripts("UserPromptSubmit"), [[undefined, ["route.mjs"]]]);
+  assert.deepEqual(hookScripts("SubagentStart"), [[undefined, ["subagent-start.mjs"]]]);
+  /* Codex matches the whole tool name, and names its spawn tool with a namespace. */
+  const spawnMatcher = new RegExp(`^(?:${hookScripts("PreToolUse")[0][0]})$`);
+  for (const name of ["Agent", "spawn_agent", "collaborationspawn_agent"]) assert.match(name, spawnMatcher);
 });
 
 const touch = (cwd, session_id, tool_name, file, extra = {}) =>
@@ -241,6 +339,26 @@ test("touch reports blast radius for a zone the thread already holds", () => {
   const out = touch(cwd, session_id, "Write", "a/index.ts");
   assert.equal(out.hookSpecificOutput.additionalContext, "code-map: a/index.ts is a ZA entrypoint used by ZB. verify: npm test b");
   assert.equal(out.systemMessage, "code-map → a/index.ts is a ZA entrypoint used by 1 zone");
+});
+
+test("touch routes every file in a Codex patch in one output, with blast for an entrypoint", () => {
+  const cwd = fixture();
+  const session_id = session();
+  const command = ["*** Begin Patch", `*** Update File: ${join(cwd, "a/index.ts")}`, "@@", "+// rounding",
+    `*** Update File: ${join(cwd, "a/x.ts")}`, "@@", "+// rounding", "*** Update File: b/chart.ts", "@@", "+// scale", "*** End Patch"].join("\n");
+  const out = run("touch.mjs", { session_id, tool_name: "apply_patch", tool_input: { command } }, { cwd });
+  const context = out.hookSpecificOutput.additionalContext;
+  assert.ok(context.startsWith("code-map: a/index.ts is in ZA (high). Its entry:\nZA (high): "));
+  assert.match(context, /\ncode-map: a\/index\.ts is a ZA entrypoint used by ZB\. verify: npm test b\ncode-map: b\/chart\.ts is in ZB \(low\), [^\n]+$/);
+  assert.equal(context.match(/ZA \(high\): /g).length, 1);
+  assert.equal(out.systemMessage, "code-map → ZA (high) via a/index.ts · code-map → a/index.ts is a ZA entrypoint used by 1 zone");
+  assert.deepEqual(JSON.parse(readFileSync(seenFile(session_id), "utf-8")), { zones: { ZA: "full", ZB: "line" }, blast: ["ZA"] });
+});
+
+test("touch routes a plain shell read like a Read", () => {
+  const out = run("touch.mjs", { session_id: session(), tool_name: "Bash", tool_input: { command: "sed -n '1,40p' b/chart.ts" } }, { cwd: fixture() });
+  assert.equal(out.hookSpecificOutput.additionalContext,
+    "code-map: b/chart.ts is in ZB (low), Dashboard widgets and charts. verify: npm test b; 2 invariants in CODEMAP.md.");
 });
 
 test("touch ignores unowned files, the map, outside paths, missing paths, and unmapped repos", () => {
@@ -284,6 +402,14 @@ test("session-start nudges once per unmapped git repo, from any subdirectory", (
   assert.equal(run("session-start.mjs", { session_id: session(), source: "startup" }, { cwd, env }), null);
 });
 
+test("session-start names the skill the Codex way when Codex runs the hook", () => {
+  const cwd = fixture({ map: null });
+  mkdirSync(join(cwd, ".git"));
+  const env = { CLAUDE_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "code-map-data-")), PLUGIN_ROOT: REPO };
+  assert.deepEqual(run("session-start.mjs", { session_id: session(), source: "startup" }, { cwd, env }),
+    { systemMessage: "code-map: no zone map in this repo. Run $code-map:init to draft one." });
+});
+
 test("session-start skips the nudge on clear, without plugin data, outside git, and under a mapped root", () => {
   const env = { CLAUDE_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "code-map-data-")) };
   const unmapped = fixture({ map: null });
@@ -301,6 +427,19 @@ test("orphan-check still flags an edit to a file no zone owns", () => {
   const cwd = fixture();
   const out = run("orphan-check.mjs", { tool_name: "Edit", tool_input: { file_path: join(cwd, "notes/todo.md") } }, { cwd });
   assert.match(out.hookSpecificOutput.additionalContext, /^`notes\/todo\.md` belongs to no zone in CODEMAP\.md\./);
+});
+
+test("orphan-check flags each unowned file a Codex patch edits, one line each, and ignores reads", () => {
+  const cwd = fixture();
+  const patch = (...lines) => ({ tool_name: "apply_patch", tool_input: { command: ["*** Begin Patch", ...lines, "*** End Patch"].join("\n") } });
+  const out = run("orphan-check.mjs", patch("*** Add File: notes/new.md", "+hi", `*** Update File: ${join(cwd, "a/x.ts")}`, "@@", "+//",
+    "*** Update File: notes/todo.md", "@@", "+more"), { cwd });
+  const lines = out.hookSpecificOutput.additionalContext.split("\n");
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /^`notes\/new\.md` belongs to no zone in CODEMAP\.md\./);
+  assert.match(lines[1], /^`notes\/todo\.md` belongs to no zone in CODEMAP\.md\./);
+  assert.equal(run("orphan-check.mjs", patch("*** Update File: a/x.ts", "@@", "+//"), { cwd }), null);
+  assert.equal(run("orphan-check.mjs", { tool_name: "Bash", tool_input: { command: "cat notes/todo.md" } }, { cwd }), null);
 });
 
 test("zones-check reports the token budget and warns past it without failing", () => {

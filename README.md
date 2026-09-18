@@ -12,18 +12,30 @@ The map routes, source decides, and the validator keeps the map honest.
 
 ## Install
 
+Claude Code:
+
 ```
 /plugin marketplace add hungduong-projects/code-map
 /plugin install code-map@code-map
 ```
+
+Codex CLI reads the same plugin files:
+
+```
+codex plugin marketplace add hungduong-projects/code-map
+codex plugin add code-map@code-map
+```
+
+Then open `/hooks` in Codex and trust code-map's hooks. Codex skips plugin
+hooks until you do, and asks again when an update changes them.
 
 Requires Node 18+ on PATH (the hooks and validator are dependency-free node
 scripts). MIT licensed.
 
 ## Use
 
-- `/code-map:init` — scan the current repo and draft its map
-  (`docs/reference/code-zones.md`, or `CODEMAP.md` at the root).
+- `/code-map:init` (`$code-map:init` in Codex) — scan the current repo and
+  draft its map (`docs/reference/code-zones.md`, or `CODEMAP.md` at the root).
 - **Session start** — a mapped repo opens with the zone index in context,
   about 400 tokens for a 15-zone map. A map with problems gets one line naming
   the first. A git repo without a map shows a one-time hint to run
@@ -31,11 +43,14 @@ scripts). MIT licensed.
 - **Prompts** — when a prompt moves into a high-risk zone or spans zones the
   session has not seen, those zones' entries go in, including which zones
   depend on them. Same-zone follow-ups and single low-risk edits stay silent.
-- **Subagents** — an `Agent` call gets its task's zone entries appended to the
-  subagent's prompt, or a one-line pointer to the map. Subagents start without
-  your session's context.
-- **File touches** — the first Read, Edit or Write in a zone the agent has not
-  seen adds that zone: the full entry for high risk, one line otherwise.
+- **Subagents** — subagents start without your session's context. A Claude
+  `Agent` call gets its task's zone entries appended to the subagent's prompt,
+  or a one-line pointer to the map. A Codex subagent that inherits none of the
+  thread starts with the zones your session already loaded in full.
+- **File touches** — the first read or edit in a zone the agent has not seen
+  adds that zone: the full entry for high risk, one line otherwise. Reads and
+  edits count from Read, Edit, Write, a Codex patch, or a plain `cat`,
+  `sed -n`, `head`, `tail` or `nl`.
   Editing a zone's entrypoint names the zones that depend on it and their
   verify commands.
 - **Unowned edits** — an edit landing in a file no zone owns gets flagged:

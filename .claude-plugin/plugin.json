@@ -2,7 +2,7 @@
   "name": "code-map",
   "displayName": "Code Map",
   "description": "Coding agents re-discover your repo every session and miss what they must not break. code-map hands each agent, subagent and file edit the right zone from one checked-in, validated map.",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "author": {
     "name": "Harry Duong",
     "url": "https://github.com/hungduong-projects"

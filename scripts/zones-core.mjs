@@ -1,9 +1,9 @@
 /* Shared parsing for the code-zones map. Dependency-free so hooks and CI can
  * run it before any install step. */
 
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 /* Where a repo may keep its map, first hit wins. */
 export const MAP_LOCATIONS = [
@@ -245,6 +245,52 @@ export function formatIndex({ relative, zones }) {
   ].join("\n");
 }
 
+/* The zone block a subagent starts with: the given zones' entries, or a
+ * pointer to the map when there are none. It reads as part of the task,
+ * because subagents treat a detached "fact" as outside their brief. */
+export const TASK_MARKER = "Zone context for this task (code-map";
+
+export function formatTaskBlock({ relative, zones }, picked) {
+  return picked.length
+    ? [`${TASK_MARKER}, ${relative}; source wins):`, ...picked.map((zone) => formatEntry(zone, zones))].join("\n")
+    : `${TASK_MARKER}): this repo's zone map is ${relative}; source wins.`;
+}
+
+/* The files one tool call touched, relative to root and inside it, as
+ * { path, edit }. Claude names one file_path; a Codex apply_patch names the
+ * files it adds, updates or moves to (a deleted file has nothing to route);
+ * a shell command counts when a segment is a plain cat, head, tail, sed or nl
+ * of existing files. Substitutions, redirects and a cd make shell paths
+ * uncertain, so those read as nothing. */
+const READERS = new Set(["cat", "head", "tail", "sed", "nl"]);
+
+export async function touchedFiles({ tool_name: tool, tool_input: args = {} }, root) {
+  const files = [];
+  if (["Read", "Edit", "Write"].includes(tool) && typeof args.file_path === "string") {
+    files.push({ path: args.file_path, edit: tool !== "Read" });
+  } else if (tool === "apply_patch" && typeof args.command === "string") {
+    for (const [, path] of args.command.matchAll(/^\*\*\* (?:Add File|Update File|Move to): (.+)$/gm)) {
+      files.push({ path: path.trim(), edit: true });
+    }
+  } else if (tool === "Bash" && typeof args.command === "string" && !/\$\(|`|>|<</.test(args.command)) {
+    for (const segment of args.command.split(/&&|\|\||[|;\n]/)) {
+      const [first, ...rest] = (segment.match(/'[^']*'|"[^"]*"|[^\s'"]+/g) ?? [])
+        .map((word) => word.replace(/^(['"])(.*)\1$/, "$2"));
+      if (first === "cd") break;
+      if (!READERS.has(first)) continue;
+      for (const word of rest.filter((word) => !word.startsWith("-"))) {
+        if (await stat(resolve(root, word)).then((info) => info.isFile(), () => false)) files.push({ path: word, edit: false });
+      }
+    }
+  }
+  const unique = new Map();
+  for (const { path, edit } of files) {
+    const inside = relative(root, resolve(root, path));
+    if (inside && !inside.startsWith("..") && !unique.has(inside)) unique.set(inside, { path: inside, edit });
+  }
+  return [...unique.values()];
+}
+
 /* Hook input arrives as one JSON object on stdin. Anything else is no event
  * to act on, so the hook ends quietly. */
 export async function readInput() {
@@ -285,4 +331,17 @@ export async function loadSeen(session, agent) {
 
 export async function saveSeen(session, agent, seen) {
   await writeFile(seenPath(session, agent), JSON.stringify(seen)).catch(() => {});
+}
+
+/* How much of the parent thread the next Codex subagent inherits: its spawn
+ * call's fork_turns, "all" when unset. Only a Codex spawn writes this, so a
+ * Claude session never has one. */
+const forkPath = (session) => seenPath(session, "fork");
+
+export async function saveFork(session, fork) {
+  await writeFile(forkPath(session), JSON.stringify(String(fork ?? "all"))).catch(() => {});
+}
+
+export async function loadFork(session) {
+  return readFile(forkPath(session), "utf-8").then(JSON.parse).catch(() => null);
 }

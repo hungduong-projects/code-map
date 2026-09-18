@@ -54,5 +54,7 @@ if (loaded?.problems.length) {
     notice: `code-map: ${plural(loaded.zones.length, "zone")} ready (${loaded.relative})`,
   });
 } else if (!loaded && input.source === "startup" && process.env.CLAUDE_PLUGIN_DATA && (await firstNudge(root))) {
-  emit("SessionStart", { notice: "code-map: no zone map in this repo. Run /code-map:init to draft one." });
+  /* Only Codex sets PLUGIN_ROOT; its users call a skill with $. */
+  const skill = process.env.PLUGIN_ROOT ? "$code-map:init" : "/code-map:init";
+  emit("SessionStart", { notice: `code-map: no zone map in this repo. Run ${skill} to draft one.` });
 }
